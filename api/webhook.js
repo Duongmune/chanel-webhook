@@ -1,4 +1,3 @@
-
 const admin = require('firebase-admin');
 
 // Khởi tạo Firebase Admin SDK
@@ -41,14 +40,24 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true });
     }
 
-    const username = match[1].toLowerCase();
-    console.log(`🔍 Tìm donation của: ${username} — ${amount}đ`);
+    const usernameRaw = match[1].toLowerCase();
+    console.log(`🔍 Tìm donation của: ${usernameRaw} — ${amount}đ`);
 
-    const db   = admin.database();
-    const snap = await db.ref('donations/' + username).once('value');
+    const db = admin.database();
+
+    // Username trong Firebase có thể lưu kèm dấu "@" (vd: @ndungvip)
+    // nhưng ngân hàng tự xóa ký tự đặc biệt khỏi nội dung CK khi chuyển thật
+    // → thử cả 2 trường hợp: không có "@" và có "@"
+    let username = usernameRaw;
+    let snap     = await db.ref('donations/' + username).once('value');
 
     if (!snap.exists()) {
-      console.log('⚠️ Không tìm thấy donation pending của:', username);
+      username = '@' + usernameRaw;
+      snap     = await db.ref('donations/' + username).once('value');
+    }
+
+    if (!snap.exists()) {
+      console.log('⚠️ Không tìm thấy donation pending của:', usernameRaw);
       return res.status(200).json({ ok: true });
     }
 
