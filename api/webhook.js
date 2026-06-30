@@ -40,54 +40,54 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true });
     }
 
-    const usernameRaw = match[1].toLowerCase();
-    console.log(`🔍 Tìm donation của: ${usernameRaw} — ${amount}đ`);
+    // usernameClean: chữ thường, chỉ gồm a-z0-9 — khớp với field đã chuẩn hóa
+    // sẵn ở phía frontend (vì ngân hàng tự xóa ký tự đặc biệt như "@" khỏi nội dung CK)
+    const usernameClean = match[1].toLowerCase().replace(/[^a-z0-9]/g, '');
+    console.log(`🔍 Tìm donation pending của: ${usernameClean} — ${amount}đ`);
 
     const db = admin.database();
 
-    // Username trong Firebase có thể lưu kèm dấu "@" (vd: @ndungvip)
-    // nhưng ngân hàng tự xóa ký tự đặc biệt khỏi nội dung CK khi chuyển thật
-    // → thử cả 2 trường hợp: không có "@" và có "@"
-    let username = usernameRaw;
-    let snap     = await db.ref('donations/' + username).once('value');
+    // Mỗi user giờ có thể có NHIỀU bản ghi donate (mỗi lần donate = 1 push key
+    // riêng, để cộng dồn được trên bảng xếp hạng). Tìm tất cả bản ghi có
+    // usernameClean khớp, rồi lọc ra đúng cái đang "pending" + số tiền khớp
+    // + còn trong hạn 24h. Nếu có nhiều cái khớp, chọn cái MỚI NHẤT.
+    const snap = await db.ref('donations')
+      .orderByChild('usernameClean')
+      .equalTo(usernameClean)
+      .once('value');
 
     if (!snap.exists()) {
-      username = '@' + usernameRaw;
-      snap     = await db.ref('donations/' + username).once('value');
-    }
-
-    if (!snap.exists()) {
-      console.log('⚠️ Không tìm thấy donation pending của:', usernameRaw);
+      console.log('⚠️ Không tìm thấy donation nào của:', usernameClean);
       return res.status(200).json({ ok: true });
     }
 
-    const donation = snap.val();
+    let foundKey = null;
+    let foundTimestamp = -1;
 
-    // Kiểm tra 3 điều kiện
-    if (donation.status !== 'pending') {
-      console.log('⚠️ Donation không còn pending:', donation.status);
+    snap.forEach(child => {
+      const d = child.val();
+      const isFresh = (Date.now() - (d.timestamp || 0)) <= 24 * 60 * 60 * 1000;
+      if (d.status === 'pending' && d.amount === amount && isFresh) {
+        if (d.timestamp > foundTimestamp) {
+          foundTimestamp = d.timestamp;
+          foundKey = child.key;
+        }
+      }
+    });
+
+    if (!foundKey) {
+      console.log(`⚠️ Không có donation pending khớp số tiền ${amount}đ cho:`, usernameClean);
       return res.status(200).json({ ok: true });
     }
 
-    if (donation.amount !== amount) {
-      console.log(`⚠️ Số tiền không khớp: expected ${donation.amount}, got ${amount}`);
-      return res.status(200).json({ ok: true });
-    }
-
-    // Không quá 24h
-    if (Date.now() - donation.timestamp > 24 * 60 * 60 * 1000) {
-      console.log('⚠️ Donation đã quá 24h');
-      return res.status(200).json({ ok: true });
-    }
-
-    // ✅ Tất cả đều khớp — TỰ ĐỘNG DUYỆT!
-    await db.ref('donations/' + username).update({
+    // ✅ Khớp — TỰ ĐỘNG DUYỆT!
+    await db.ref('donations/' + foundKey).update({
       status    : 'approved',
       approvedAt: Date.now(),
       txRef     : String(tx.referenceCode || tx.id || '')
     });
 
-    console.log(`✅ Đã duyệt: ${username} — ${amount}đ`);
+    console.log(`✅ Đã duyệt: ${usernameClean} (${foundKey}) — ${amount}đ`);
     return res.status(200).json({ ok: true });
 
   } catch (e) {
